@@ -2,10 +2,13 @@ package discord
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -441,13 +444,75 @@ func lastMemberUserID(page []*discordgo.Member) string {
 func (c *Client) ChannelMessages(ctx context.Context, channelID string, limit int, beforeID, afterID string) ([]*discordgo.Message, error) {
 	reqCtx, cancel := c.requestContext(ctx)
 	defer cancel()
-	return c.session.ChannelMessages(channelID, limit, beforeID, afterID, "", discordgo.WithContext(reqCtx))
+	endpoint := discordgo.EndpointChannelMessages(channelID)
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	if beforeID != "" {
+		query.Set("before", beforeID)
+	}
+	if afterID != "" {
+		query.Set("after", afterID)
+	}
+	requestURL := endpoint
+	if len(query) > 0 {
+		requestURL += "?" + query.Encode()
+	}
+	body, err := c.session.RequestWithBucketID("GET", requestURL, nil, endpoint, discordgo.WithContext(reqCtx))
+	if err != nil {
+		return nil, err
+	}
+	var messages []*discordgo.Message
+	if err := unmarshalMessages(body, &messages); err != nil {
+		return nil, err
+	}
+	return messages, nil
 }
 
 func (c *Client) ChannelMessage(ctx context.Context, channelID, messageID string) (*discordgo.Message, error) {
 	reqCtx, cancel := c.requestContext(ctx)
 	defer cancel()
-	return c.session.ChannelMessage(channelID, messageID, discordgo.WithContext(reqCtx))
+	endpoint := discordgo.EndpointChannelMessage(channelID, messageID)
+	body, err := c.session.RequestWithBucketID("GET", endpoint, nil, discordgo.EndpointChannelMessage(channelID, ""), discordgo.WithContext(reqCtx))
+	if err != nil {
+		return nil, err
+	}
+	var message *discordgo.Message
+	if err := unmarshalMessages(body, &message); err != nil {
+		return nil, err
+	}
+	return message, nil
+}
+
+func unmarshalMessages(data []byte, target any) error {
+	if err := json.Unmarshal(data, target); err == nil {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	stripComponents(value)
+	sanitized, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(sanitized, target)
+}
+
+func stripComponents(value any) {
+	switch value := value.(type) {
+	case map[string]any:
+		delete(value, "components")
+		for _, child := range value {
+			stripComponents(child)
+		}
+	case []any:
+		for _, child := range value {
+			stripComponents(child)
+		}
+	}
 }
 
 func (c *Client) Tail(ctx context.Context, handler EventHandler) error {

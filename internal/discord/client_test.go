@@ -169,6 +169,40 @@ func TestClientRESTWrappers(t *testing.T) {
 	require.Equal(t, "m1", message.ID)
 }
 
+func TestMessageRESTIgnoresUnknownComponentsButKeepsArchiveFields(t *testing.T) {
+	mux := http.NewServeMux()
+	message := map[string]any{
+		"id":         "m20",
+		"guild_id":   "g1",
+		"channel_id": "c1",
+		"content":    "keep me",
+		"timestamp":  "2026-08-24T00:00:00Z",
+		"author":     map[string]any{"id": "u1", "username": "peter"},
+		"components": []map[string]any{{"type": 20, "id": 1}},
+	}
+	mux.HandleFunc("/api/v10/channels/c1/messages", writeJSON([]map[string]any{message}))
+	mux.HandleFunc("/api/v10/channels/c1/messages/m20", writeJSON(message))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	restore := patchDiscordEndpoints(server.URL + "/api/v10/")
+	t.Cleanup(restore)
+
+	client, err := New("token")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	messages, err := client.ChannelMessages(context.Background(), "c1", 100, "", "")
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.Equal(t, "keep me", messages[0].Content)
+	require.Empty(t, messages[0].Components)
+
+	got, err := client.ChannelMessage(context.Background(), "c1", "m20")
+	require.NoError(t, err)
+	require.Equal(t, "keep me", got.Content)
+	require.Empty(t, got.Components)
+}
+
 func TestThreadsArchivedStopsAtAfterCursor(t *testing.T) {
 	after := time.Date(2026, time.August, 19, 12, 0, 0, 0, time.UTC)
 	requests := 0
