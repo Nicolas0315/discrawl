@@ -84,9 +84,10 @@ type fileFingerprint struct {
 }
 
 type scanState struct {
-	previous map[string]fileFingerprint
-	current  map[string]fileFingerprint
-	channels map[string]store.ChannelRecord
+	previous         map[string]fileFingerprint
+	current          map[string]fileFingerprint
+	channels         map[string]store.ChannelRecord
+	migratingV1Index bool
 }
 
 type fileSource int
@@ -118,7 +119,10 @@ type scanTotals struct {
 
 type unresolvedMessages map[string]string
 
-const wiretapFileIndexScope = "wiretap:file_index:v2"
+const (
+	wiretapFileIndexScope  = "wiretap:file_index:v2"
+	legacyFileIndexScopeV1 = "wiretap:file_index:v1"
+)
 
 const (
 	fileStatusImported = "imported"
@@ -160,7 +164,13 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 		if opts.DryRun {
 			return stats, nil
 		}
-		if err := writeSnapshot(ctx, st, snap, len(state.previous) == 0); err != nil {
+		if state.migratingV1Index {
+			snap, err = snapshotWithoutExistingMessageEvents(ctx, st, snap)
+			if err != nil {
+				return stats, err
+			}
+		}
+		if err := writeSnapshot(ctx, st, snap, len(state.previous) == 0 && !state.migratingV1Index); err != nil {
 			return stats, err
 		}
 		if err := saveFileIndex(ctx, st, opts, state.current); err != nil {
@@ -213,6 +223,15 @@ func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanStat
 	if strings.TrimSpace(raw) != "" {
 		if err := json.Unmarshal([]byte(raw), &state.previous); err != nil {
 			state.previous = map[string]fileFingerprint{}
+		}
+	} else {
+		legacyRaw, err := st.GetSyncState(ctx, legacyFileIndexScopeV1)
+		if err != nil {
+			return state, err
+		}
+		legacyIndex := map[string]fileFingerprint{}
+		if json.Unmarshal([]byte(legacyRaw), &legacyIndex) == nil && len(legacyIndex) > 0 {
+			state.migratingV1Index = true
 		}
 	}
 	channels, err := st.Channels(ctx, "")
@@ -285,7 +304,7 @@ func scanAndImport(ctx context.Context, st *store.Store, opts Options, state sca
 		stats.FinishedAt = now().UTC()
 		return stats, err
 	}
-	fullScan := len(state.previous) == 0
+	fullScan := len(state.previous) == 0 && !state.migratingV1Index
 	if fullScan && !opts.DryRun {
 		if err := st.DeleteGuildData(ctx, "@unknown"); err != nil {
 			stats.FinishedAt = now().UTC()
@@ -662,6 +681,13 @@ func commitSnapshot(ctx context.Context, st *store.Store, opts Options, state sc
 		return nil
 	}
 	if snapshotHasChanges(snap) {
+		if state.migratingV1Index {
+			var err error
+			snap, err = snapshotWithoutExistingMessageEvents(ctx, st, snap)
+			if err != nil {
+				return err
+			}
+		}
 		if err := writeSnapshot(ctx, st, snap, false); err != nil {
 			return err
 		}
@@ -708,6 +734,24 @@ func snapshotWithoutMessageEvents(snap snapshot) snapshot {
 		out.messages[id] = message
 	}
 	return out
+}
+
+func snapshotWithoutExistingMessageEvents(ctx context.Context, st *store.Store, snap snapshot) (snapshot, error) {
+	ids := make([]string, 0, len(snap.messages))
+	for id := range snap.messages {
+		ids = append(ids, id)
+	}
+	existing, err := st.ExistingMessageIDs(ctx, ids)
+	if err != nil {
+		return snapshot{}, err
+	}
+	for id, message := range snap.messages {
+		if _, ok := existing[id]; ok {
+			message.Options.AppendEvent = false
+			snap.messages[id] = message
+		}
+	}
+	return snap, nil
 }
 
 func newSnapshot() snapshot {

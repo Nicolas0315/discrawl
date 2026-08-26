@@ -814,6 +814,38 @@ func (s *Store) GuildChannelCount(ctx context.Context, guildID string) (int, err
 	return int(count), err
 }
 
+func (s *Store) ExistingMessageIDs(ctx context.Context, messageIDs []string) (map[string]struct{}, error) {
+	const batchSize = 500
+	existing := make(map[string]struct{})
+	for start := 0; start < len(messageIDs); start += batchSize {
+		end := min(start+batchSize, len(messageIDs))
+		args := make([]any, end-start)
+		for i, id := range messageIDs[start:end] {
+			args[i] = id
+		}
+		rows, err := s.db.QueryContext(ctx, `select id from messages where id in (`+placeholders(len(args))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			existing[id] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return existing, nil
+}
+
 func (s *Store) GuildMemberCount(ctx context.Context, guildID string) (int, error) {
 	count, err := s.q.CountMembersByGuild(ctx, guildID)
 	return int(count), err
