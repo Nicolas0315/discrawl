@@ -224,6 +224,7 @@ func TestImportCheckpointsUnresolvableRouteBearingCacheMisses(t *testing.T) {
 	require.Equal(t, 1, stats.FilesScanned)
 	require.Equal(t, 1, stats.SkippedMessages)
 	require.Equal(t, 1, stats.Checkpoints)
+	require.Equal(t, ReconciliationReceipt{Queued: 1, Attempted: 1, Remaining: 1}, stats.Reconciliation)
 
 	results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "permanent unresolved", Limit: 10})
 	require.NoError(t, err)
@@ -234,6 +235,7 @@ func TestImportCheckpointsUnresolvableRouteBearingCacheMisses(t *testing.T) {
 	require.Equal(t, 1, stats.FilesScanned)
 	require.Equal(t, 1, stats.SkippedMessages)
 	require.Equal(t, 0, stats.FilesUnchanged)
+	require.Equal(t, ReconciliationReceipt{Attempted: 1, Remaining: 1}, stats.Reconciliation)
 
 	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_001"), bytesf(`https://discord.com/channels/999999999999999996/%s
 {"id":"%s","guild_id":"999999999999999996","type":0,"name":"later-resolved"}
@@ -242,11 +244,18 @@ func TestImportCheckpointsUnresolvableRouteBearingCacheMisses(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, stats.FilesScanned)
 	require.Equal(t, 1, stats.Messages)
+	require.Equal(t, ReconciliationReceipt{Resolved: 1, Remaining: 0}, stats.Reconciliation)
 
 	results, err = st.SearchMessages(ctx, store.SearchOptions{Query: "permanent unresolved", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Equal(t, "later-resolved", results[0].ChannelName)
+	requireMessageCount(t, ctx, st, "message_events", 1)
+
+	stats, err = Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, 0, stats.Reconciliation.Remaining)
+	requireMessageCount(t, ctx, st, "message_events", 1)
 }
 
 func TestImportDoesNotAppendEventsForSkippedMixedBatch(t *testing.T) {

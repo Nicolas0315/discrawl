@@ -46,27 +46,28 @@ type Options struct {
 }
 
 type Stats struct {
-	Path                  string    `json:"path"`
-	FilesVisited          int       `json:"files_visited"`
-	FilesScanned          int       `json:"files_scanned"`
-	FilesSkipped          int       `json:"files_skipped"`
-	FilesUnchanged        int       `json:"files_unchanged"`
-	CacheFilesFastSkipped int       `json:"cache_files_fast_skipped"`
-	BytesScanned          int64     `json:"bytes_scanned"`
-	JSONObjects           int       `json:"json_objects"`
-	Guilds                int       `json:"guilds"`
-	Channels              int       `json:"channels"`
-	Messages              int       `json:"messages"`
-	DMMessages            int       `json:"dm_messages"`
-	DMChannels            int       `json:"dm_channels"`
-	GuildMessages         int       `json:"guild_messages"`
-	SkippedMessages       int       `json:"skipped_messages"`
-	SkippedChannels       int       `json:"skipped_channels"`
-	Checkpoints           int       `json:"checkpoints"`
-	DryRun                bool      `json:"dry_run,omitempty"`
-	FullCache             bool      `json:"full_cache,omitempty"`
-	StartedAt             time.Time `json:"started_at"`
-	FinishedAt            time.Time `json:"finished_at"`
+	Path                  string                `json:"path"`
+	FilesVisited          int                   `json:"files_visited"`
+	FilesScanned          int                   `json:"files_scanned"`
+	FilesSkipped          int                   `json:"files_skipped"`
+	FilesUnchanged        int                   `json:"files_unchanged"`
+	CacheFilesFastSkipped int                   `json:"cache_files_fast_skipped"`
+	BytesScanned          int64                 `json:"bytes_scanned"`
+	JSONObjects           int                   `json:"json_objects"`
+	Guilds                int                   `json:"guilds"`
+	Channels              int                   `json:"channels"`
+	Messages              int                   `json:"messages"`
+	DMMessages            int                   `json:"dm_messages"`
+	DMChannels            int                   `json:"dm_channels"`
+	GuildMessages         int                   `json:"guild_messages"`
+	SkippedMessages       int                   `json:"skipped_messages"`
+	SkippedChannels       int                   `json:"skipped_channels"`
+	Checkpoints           int                   `json:"checkpoints"`
+	Reconciliation        ReconciliationReceipt `json:"reconciliation"`
+	DryRun                bool                  `json:"dry_run,omitempty"`
+	FullCache             bool                  `json:"full_cache,omitempty"`
+	StartedAt             time.Time             `json:"started_at"`
+	FinishedAt            time.Time             `json:"finished_at"`
 }
 
 type snapshot struct {
@@ -310,6 +311,12 @@ func scanAndImport(ctx context.Context, st *store.Store, opts Options, state sca
 		return stats, err
 	}
 	if !opts.DryRun {
+		receipt, err := reconcileQueue(ctx, st, run.pendingUnresolved, run.totals.messages, now())
+		if err != nil {
+			stats.FinishedAt = now().UTC()
+			return stats, err
+		}
+		stats.Reconciliation = receipt
 		if len(contextFiles) == 0 && len(cacheFiles) == 0 {
 			if err := st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 				stats.FinishedAt = now().UTC()
