@@ -49,7 +49,17 @@ func reconcileQueue(
 		return ReconciliationReceipt{}, err
 	}
 	receipt := ReconciliationReceipt{}
+	for messageID := range imported {
+		if _, exists := queue.Items[messageID]; !exists {
+			continue
+		}
+		delete(queue.Items, messageID)
+		receipt.Resolved++
+	}
 	for messageID, channelID := range unresolved {
+		if _, resolvedThisRun := imported[messageID]; resolvedThisRun {
+			continue
+		}
 		item, exists := queue.Items[messageID]
 		if !exists {
 			item.FirstSeenAt = now.UTC()
@@ -60,13 +70,6 @@ func reconcileQueue(
 		item.Attempts++
 		queue.Items[messageID] = item
 		receipt.Attempted++
-	}
-	for messageID := range imported {
-		if _, exists := queue.Items[messageID]; !exists {
-			continue
-		}
-		delete(queue.Items, messageID)
-		receipt.Resolved++
 	}
 	receipt.Remaining = len(queue.Items)
 	if err := saveReconciliationState(ctx, st, queue, receipt, now); err != nil {
@@ -111,11 +114,11 @@ func saveReconciliationState(
 	if err != nil {
 		return fmt.Errorf("encode wiretap reconciliation receipt: %w", err)
 	}
-	if err := st.SetSyncState(ctx, wiretapReconciliationQueueScope, string(queueBody)); err != nil {
-		return fmt.Errorf("save wiretap reconciliation queue: %w", err)
-	}
-	if err := st.SetSyncState(ctx, wiretapReconciliationReceiptScope, string(receiptBody)); err != nil {
-		return fmt.Errorf("save wiretap reconciliation receipt: %w", err)
+	if err := st.SetSyncStates(ctx, map[string]string{
+		wiretapReconciliationQueueScope:   string(queueBody),
+		wiretapReconciliationReceiptScope: string(receiptBody),
+	}); err != nil {
+		return fmt.Errorf("save wiretap reconciliation state: %w", err)
 	}
 	return nil
 }

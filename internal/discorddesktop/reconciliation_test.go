@@ -52,3 +52,18 @@ func TestReconciliationQueueDeduplicatesAndStoresMetadataOnly(t *testing.T) {
 	require.NotContains(t, raw, "333333333333333346")
 	require.NotContains(t, raw, "111111111111111121")
 }
+
+func TestReconciliationQueueDoesNotCountSameRunResolutionAsQueued(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	receipt, err := reconcileQueue(ctx, s,
+		unresolvedMessages{"333333333333333346": "111111111111111121"},
+		map[string]struct{}{"333333333333333346": {}},
+		time.Date(2026, 8, 27, 1, 2, 3, 0, time.UTC),
+	)
+	require.NoError(t, err)
+	require.Equal(t, ReconciliationReceipt{}, receipt)
+}

@@ -157,7 +157,7 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 		return Stats{}, err
 	}
 	if opts.FullCache {
-		stats, snap, err := scanFullCache(ctx, opts, state)
+		stats, snap, unresolved, err := scanFullCache(ctx, opts, state)
 		if err != nil {
 			return stats, err
 		}
@@ -178,6 +178,15 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 			return stats, err
 		}
 		stats.Checkpoints = 1
+		imported := make(map[string]struct{}, len(snap.messages))
+		for messageID := range snap.messages {
+			imported[messageID] = struct{}{}
+		}
+		receipt, err := reconcileQueue(ctx, st, unresolved, imported, stats.FinishedAt)
+		if err != nil {
+			return stats, err
+		}
+		stats.Reconciliation = receipt
 		if err := saveCoverageStats(ctx, st, stats); err != nil {
 			return stats, err
 		}
@@ -356,7 +365,7 @@ func scanAndImport(ctx context.Context, st *store.Store, opts Options, state sca
 	return stats, nil
 }
 
-func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, snapshot, error) {
+func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, snapshot, unresolvedMessages, error) {
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -374,7 +383,7 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 	rootFS, err := os.OpenRoot(root)
 	if err != nil {
 		stats.FinishedAt = now().UTC()
-		return stats, snap, ignoreCacheFileError(err)
+		return stats, snap, nil, ignoreCacheFileError(err)
 	}
 	defer func() { _ = rootFS.Close() }()
 	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -444,12 +453,12 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 		}
 		return nil
 	}); err != nil {
-		return stats, snap, err
+		return stats, snap, nil, err
 	}
 	totals := newScanTotals()
-	finalizeSnapshot(snap, state.channels, totals, &stats, true)
+	unresolved := finalizeSnapshot(snap, state.channels, totals, &stats, true)
 	stats.FinishedAt = now().UTC()
-	return stats, snap, nil
+	return stats, snap, unresolved, nil
 }
 
 func discoverCandidates(ctx context.Context, root string, rootFS *os.Root, opts Options, state scanState, stats *Stats) ([]fileCandidate, []fileCandidate, error) {

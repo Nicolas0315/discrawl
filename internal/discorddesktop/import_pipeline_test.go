@@ -259,6 +259,39 @@ func TestImportCheckpointsUnresolvableRouteBearingCacheMisses(t *testing.T) {
 	requireMessageCount(t, ctx, st, "message_events", 1)
 }
 
+func TestFullCacheResolvesPersistentReconciliationQueue(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "Cache", "Cache_Data")
+	require.NoError(t, os.MkdirAll(cachePath, 0o755))
+
+	channelID := "111111111111111121"
+	messageID := "333333333333333346"
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_000"), bytesf(`https://discord.com/api/v9/channels/%s/messages?limit=50
+{"id":"%s","channel_id":"%s","content":"full cache reconciliation","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222232","username":"alice"}}
+`, channelID, messageID, channelID), 0o600))
+
+	st, err := store.Open(ctx, filepath.Join(dir, "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+
+	stats, err := Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Reconciliation.Remaining)
+
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_001"), bytesf(`https://discord.com/channels/999999999999999996/%s
+{"id":"%s","guild_id":"999999999999999996","type":0,"name":"full-resolved"}
+`, channelID, channelID), 0o600))
+	stats, err = Import(ctx, st, Options{Path: dir, FullCache: true})
+	require.NoError(t, err)
+	require.Equal(t, ReconciliationReceipt{Resolved: 1, Remaining: 0}, stats.Reconciliation)
+
+	results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "full cache reconciliation", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	requireMessageCount(t, ctx, st, "message_events", 1)
+}
+
 func TestImportDoesNotAppendEventsForSkippedMixedBatch(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

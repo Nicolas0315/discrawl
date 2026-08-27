@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -580,6 +581,30 @@ func (s *Store) SetSyncState(ctx context.Context, scope, cursor string) error {
 		Cursor:    sql.NullString{String: cursor, Valid: true},
 		UpdatedAt: time.Now().UTC().Format(timeLayout),
 	})
+}
+
+func (s *Store) SetSyncStates(ctx context.Context, states map[string]string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	scopes := make([]string, 0, len(states))
+	for scope := range states {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+	now := time.Now().UTC().Format(timeLayout)
+	for _, scope := range scopes {
+		if _, err := tx.ExecContext(ctx, `
+insert into sync_state(scope, cursor, updated_at)
+values(?, ?, ?)
+on conflict(scope) do update set cursor = excluded.cursor, updated_at = excluded.updated_at
+`, scope, states[scope], now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) AdvanceChannelLatestMessageID(ctx context.Context, channelID, messageID string) error {
