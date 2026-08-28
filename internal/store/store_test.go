@@ -176,12 +176,22 @@ func TestSearchFallbackFilters(t *testing.T) {
 		GuildIDs: []string{"g1"},
 		Channel:  "gener",
 		Author:   "Peter",
+		Before:   base.Add(time.Minute),
 		Limit:    10,
 	})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Equal(t, "m1", results[0].MessageID)
 	require.Equal(t, "general", results[0].ChannelName)
+
+	results, err = s.SearchMessages(ctx, SearchOptions{
+		Query:     "needle",
+		Before:    base.Add(2 * time.Minute),
+		ExcludeID: "m2",
+		Limit:     10,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"m1"}, searchResultIDs(results))
 
 	results, err = s.searchFallback(ctx, SearchOptions{Query: "", IncludeEmpty: true, Limit: 10})
 	require.NoError(t, err)
@@ -723,6 +733,13 @@ func TestSearchMessagesSemanticRanksAndFilters(t *testing.T) {
 	require.Equal(t, []string{"m1", "m3"}, searchResultIDs(results))
 	require.Equal(t, "Alice", results[0].AuthorName)
 	require.Equal(t, "general", results[0].ChannelName)
+
+	boundedOpts := defaultOpts
+	boundedOpts.Before = base.Add(2 * time.Minute)
+	boundedOpts.ExcludeID = "m1"
+	results, err = s.SearchMessagesSemantic(ctx, boundedOpts)
+	require.NoError(t, err)
+	require.Equal(t, []string{"m2"}, searchResultIDs(results))
 
 	results, err = s.SearchMessagesSemantic(ctx, SemanticSearchOptions{
 		QueryVector:  []float32{1, 0},

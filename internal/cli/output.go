@@ -243,6 +243,8 @@ Flags:
   --mode fts|semantic|hybrid  Search mode.
   --channel ID_OR_NAME        Filter by channel id or name.
   --author ID_OR_NAME         Filter by author id or name.
+	--before RFC3339            Search messages before timestamp.
+	--exclude-message ID        Exclude one message id.
   --limit N                   Maximum results. Default: 20.
   --include-empty             Include empty/attachment-only messages.
   --dm                        Search local desktop DM cache.

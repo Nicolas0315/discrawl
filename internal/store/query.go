@@ -44,6 +44,8 @@ type SemanticSearchOptions struct {
 	GuildIDs      []string
 	Channel       string
 	Author        string
+	Before        time.Time
+	ExcludeID     string
 	Limit         int
 	IncludeEmpty  bool
 }
@@ -120,6 +122,14 @@ func (s *Store) SearchMessages(ctx context.Context, opts SearchOptions) ([]Searc
 	if strings.TrimSpace(opts.Author) != "" {
 		clauses = append(clauses, "(message_fts.author_id = ? or message_fts.author_name like ?)")
 		args = append(args, opts.Author, "%"+opts.Author+"%")
+	}
+	if !opts.Before.IsZero() {
+		clauses = append(clauses, "julianday(fm.created_at) < julianday(?)")
+		args = append(args, opts.Before.UTC().Format(time.RFC3339Nano))
+	}
+	if strings.TrimSpace(opts.ExcludeID) != "" {
+		clauses = append(clauses, "message_fts.message_id <> ?")
+		args = append(args, opts.ExcludeID)
 	}
 	args = append(args, searchCandidateLimit(opts.Limit), opts.Limit)
 	query := `
@@ -249,6 +259,14 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 	if strings.TrimSpace(opts.Author) != "" {
 		clauses = append(clauses, "(m.author_id = ? or "+authorExpr+" like ?)")
 		args = append(args, opts.Author, "%"+opts.Author+"%")
+	}
+	if !opts.Before.IsZero() {
+		clauses = append(clauses, "julianday(m.created_at) < julianday(?)")
+		args = append(args, opts.Before.UTC().Format(time.RFC3339Nano))
+	}
+	if strings.TrimSpace(opts.ExcludeID) != "" {
+		clauses = append(clauses, "m.id <> ?")
+		args = append(args, opts.ExcludeID)
 	}
 	if !opts.IncludeEmpty {
 		clauses = append(clauses, "trim(coalesce(m.normalized_content, '')) <> ''")
@@ -628,6 +646,14 @@ func (s *Store) searchFallback(ctx context.Context, opts SearchOptions) ([]Searc
 	if strings.TrimSpace(opts.Author) != "" {
 		clauses = append(clauses, "(m.author_id = ? or m.raw_json like ?)")
 		args = append(args, opts.Author, "%"+opts.Author+"%")
+	}
+	if !opts.Before.IsZero() {
+		clauses = append(clauses, "julianday(m.created_at) < julianday(?)")
+		args = append(args, opts.Before.UTC().Format(time.RFC3339Nano))
+	}
+	if strings.TrimSpace(opts.ExcludeID) != "" {
+		clauses = append(clauses, "m.id <> ?")
+		args = append(args, opts.ExcludeID)
 	}
 	if !opts.IncludeEmpty {
 		clauses = append(clauses, "trim(coalesce(m.normalized_content, '')) <> ''")

@@ -63,6 +63,8 @@ type SearchOptions struct {
 	GuildIDs     []string
 	Channel      string
 	Author       string
+	Before       time.Time
+	ExcludeID    string
 	Limit        int
 	IncludeEmpty bool
 }

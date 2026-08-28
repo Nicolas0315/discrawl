@@ -19,6 +19,9 @@ func (r *runtime) runRemoteSearch(opts store.SearchOptions, mode string, dm bool
 	if opts.Author != "" {
 		return nil, usageErr(errors.New("cloud search does not support --author yet"))
 	}
+	if !opts.Before.IsZero() || opts.ExcludeID != "" {
+		return nil, usageErr(errors.New("cloud search does not support --before or --exclude-message yet"))
+	}
 	guildID, err := singleRemoteGuild(opts.GuildIDs)
 	if err != nil {
 		return nil, err

@@ -12,6 +12,7 @@ discrawl search --mode hybrid "database timeout"
 discrawl search --guild 123456789012345678 "payment failed"
 discrawl search --dm "launch checklist"
 discrawl search --channel billing --author steipete --limit 50 "invoice"
+discrawl search --before 2026-08-28T00:00:00Z --exclude-message 123 "invoice"
 discrawl search --include-empty "GitHub"
 discrawl --json search "websocket closed"
 ```
@@ -29,6 +30,8 @@ discrawl --json search "websocket closed"
 - `--dm` - shorthand for `--guild @me`
 - `--channel <id|name|#name>` - resolve and restrict to one channel (exact id, exact name, or unique partial name)
 - `--author <name>` - restrict to one author
+- `--before <RFC3339>` - restrict to messages created before the timestamp
+- `--exclude-message <id>` - exclude one message, such as the prompt being answered
 - `--limit <n>` - cap result count
 - `--include-empty` - include rows with no searchable content (attachment text/filenames, embeds, and replies still count as content)
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/openclaw/crawlkit/embed"
 	"github.com/openclaw/discrawl/internal/config"
@@ -20,6 +21,8 @@ func (r *runtime) runSearch(args []string) error {
 	mode := fs.String("mode", r.cfg.Search.DefaultMode, "")
 	channel := fs.String("channel", "", "")
 	author := fs.String("author", "", "")
+	before := fs.String("before", "", "")
+	excludeID := fs.String("exclude-message", "", "")
 	limit := fs.Int("limit", 20, "")
 	includeEmpty := fs.Bool("include-empty", false, "")
 	dm := fs.Bool("dm", false, "")
@@ -35,11 +38,20 @@ func (r *runtime) runSearch(args []string) error {
 	if err != nil {
 		return usageErr(err)
 	}
+	var beforeTime time.Time
+	if strings.TrimSpace(*before) != "" {
+		beforeTime, err = time.Parse(time.RFC3339, *before)
+		if err != nil {
+			return usageErr(fmt.Errorf("invalid --before: %w", err))
+		}
+	}
 	opts := store.SearchOptions{
 		Query:        fs.Arg(0),
 		GuildIDs:     guildIDs,
 		Channel:      *channel,
 		Author:       *author,
+		Before:       beforeTime,
+		ExcludeID:    *excludeID,
 		Limit:        *limit,
 		IncludeEmpty: *includeEmpty,
 	}
@@ -89,12 +101,14 @@ func (r *runtime) runSearch(args []string) error {
 
 func permuteSearchFlags(args []string) []string {
 	valueFlags := map[string]struct{}{
-		"--mode":    {},
-		"--channel": {},
-		"--author":  {},
-		"--limit":   {},
-		"--guilds":  {},
-		"--guild":   {},
+		"--mode":            {},
+		"--channel":         {},
+		"--author":          {},
+		"--before":          {},
+		"--exclude-message": {},
+		"--limit":           {},
+		"--guilds":          {},
+		"--guild":           {},
 	}
 	boolFlags := map[string]struct{}{
 		"--include-empty": {},
@@ -206,6 +220,8 @@ func (r *runtime) semanticSearchOptions(opts store.SearchOptions) (store.Semanti
 		GuildIDs:      opts.GuildIDs,
 		Channel:       opts.Channel,
 		Author:        opts.Author,
+		Before:        opts.Before,
+		ExcludeID:     opts.ExcludeID,
 		Limit:         opts.Limit,
 		IncludeEmpty:  opts.IncludeEmpty,
 	}, nil
