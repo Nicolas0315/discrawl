@@ -233,6 +233,7 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 	}
 
 	clauses := []string{
+		"e.message_id = m.id",
 		"e.provider = ?",
 		"e.model = ?",
 		"e.input_version = ?",
@@ -279,8 +280,8 @@ func (s *Store) SearchMessagesSemantic(ctx context.Context, opts SemanticSearchO
 			m.created_at,
 			e.dimensions,
 			e.embedding_blob
-		from message_embeddings e
-		join messages m on m.id = e.message_id
+		from messages m
+		cross join message_embeddings e
 		left join channels c on c.id = m.channel_id
 		where `+strings.Join(clauses, " and ")+`
 	`, args...)
