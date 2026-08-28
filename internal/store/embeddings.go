@@ -508,6 +508,16 @@ func (s *Store) EmbeddingBacklog(ctx context.Context) (int, error) {
 	return int(count), err
 }
 
+func (s *Store) QueueMissingEmbeddingJobs(ctx context.Context, opts EmbeddingDrainOptions) error {
+	opts = normalizeEmbeddingDrainOptions(opts)
+	return s.q.InsertMissingEmbeddingJobs(ctx, storedb.InsertMissingEmbeddingJobsParams{
+		Provider:     opts.Provider,
+		Model:        opts.Model,
+		InputVersion: opts.InputVersion,
+		UpdatedAt:    opts.Now().Format(timeLayout),
+	})
+}
+
 func (s *Store) RequeueAllEmbeddingJobs(ctx context.Context, opts EmbeddingDrainOptions) (int, error) {
 	opts = normalizeEmbeddingDrainOptions(opts)
 	tx, err := s.db.BeginTx(ctx, nil)

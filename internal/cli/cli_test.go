@@ -3192,7 +3192,7 @@ func TestEmbedCommandDrainsBoundedBacklog(t *testing.T) {
 
 	s, err := store.Open(ctx, dbPath)
 	require.NoError(t, err)
-	for _, id := range []string{"m1", "m2"} {
+	for i, id := range []string{"m1", "m2"} {
 		require.NoError(t, s.UpsertMessageWithOptions(ctx, store.MessageRecord{
 			ID:                id,
 			GuildID:           "g1",
@@ -3202,7 +3202,7 @@ func TestEmbedCommandDrainsBoundedBacklog(t *testing.T) {
 			Content:           "hello",
 			NormalizedContent: "hello",
 			RawJSON:           `{}`,
-		}, store.WriteOptions{EnqueueEmbedding: true}))
+		}, store.WriteOptions{EnqueueEmbedding: i == 0}))
 	}
 	require.NoError(t, s.Close())
 

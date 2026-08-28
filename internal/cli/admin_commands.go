@@ -540,6 +540,8 @@ func (r *runtime) runEmbed(args []string) error {
 		if err != nil {
 			return err
 		}
+	} else if err := r.store.QueueMissingEmbeddingJobs(r.ctx, opts); err != nil {
+		return err
 	}
 	stats, err := r.store.DrainEmbeddingJobs(r.ctx, provider, opts)
 	if err != nil {

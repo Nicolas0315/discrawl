@@ -1,6 +1,7 @@
 # `embed`
 
 Drains pending `embedding_jobs` rows by calling the configured embedding provider and writing vectors to `message_embeddings`.
+Messages imported without a queue entry, including desktop `wiretap` rows, are queued automatically first.
 
 ## Usage
 
