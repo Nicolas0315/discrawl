@@ -2,6 +2,7 @@ package discorddesktop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -224,6 +225,7 @@ func TestImportCheckpointsUnresolvableRouteBearingCacheMisses(t *testing.T) {
 	require.Equal(t, 1, stats.FilesScanned)
 	require.Equal(t, 1, stats.SkippedMessages)
 	require.Equal(t, 1, stats.Checkpoints)
+	require.Equal(t, ReconciliationReceipt{Queued: 1, Attempted: 1, Remaining: 1}, stats.Reconciliation)
 
 	results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "permanent unresolved", Limit: 10})
 	require.NoError(t, err)
@@ -231,8 +233,63 @@ func TestImportCheckpointsUnresolvableRouteBearingCacheMisses(t *testing.T) {
 
 	stats, err = Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
-	require.Equal(t, 0, stats.FilesScanned)
-	require.Equal(t, 1, stats.FilesUnchanged)
+	require.Equal(t, 1, stats.FilesScanned)
+	require.Equal(t, 1, stats.SkippedMessages)
+	require.Equal(t, 0, stats.FilesUnchanged)
+	require.Equal(t, ReconciliationReceipt{Attempted: 1, Remaining: 1}, stats.Reconciliation)
+
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_001"), bytesf(`https://discord.com/channels/999999999999999996/%s
+{"id":"%s","guild_id":"999999999999999996","type":0,"name":"later-resolved"}
+`, channelID, channelID), 0o600))
+	stats, err = Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.FilesScanned)
+	require.Equal(t, 1, stats.Messages)
+	require.Equal(t, ReconciliationReceipt{Resolved: 1, Remaining: 0}, stats.Reconciliation)
+
+	results, err = st.SearchMessages(ctx, store.SearchOptions{Query: "permanent unresolved", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "later-resolved", results[0].ChannelName)
+	requireMessageCount(t, ctx, st, "message_events", 1)
+
+	stats, err = Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, 0, stats.Reconciliation.Remaining)
+	requireMessageCount(t, ctx, st, "message_events", 1)
+}
+
+func TestFullCacheResolvesPersistentReconciliationQueue(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "Cache", "Cache_Data")
+	require.NoError(t, os.MkdirAll(cachePath, 0o755))
+
+	channelID := "111111111111111121"
+	messageID := "333333333333333346"
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_000"), bytesf(`https://discord.com/api/v9/channels/%s/messages?limit=50
+{"id":"%s","channel_id":"%s","content":"full cache reconciliation","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222232","username":"alice"}}
+`, channelID, messageID, channelID), 0o600))
+
+	st, err := store.Open(ctx, filepath.Join(dir, "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+
+	stats, err := Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Reconciliation.Remaining)
+
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_001"), bytesf(`https://discord.com/channels/999999999999999996/%s
+{"id":"%s","guild_id":"999999999999999996","type":0,"name":"full-resolved"}
+`, channelID, channelID), 0o600))
+	stats, err = Import(ctx, st, Options{Path: dir, FullCache: true})
+	require.NoError(t, err)
+	require.Equal(t, ReconciliationReceipt{Resolved: 1, Remaining: 0}, stats.Reconciliation)
+
+	results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "full cache reconciliation", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	requireMessageCount(t, ctx, st, "message_events", 1)
 }
 
 func TestImportDoesNotAppendEventsForSkippedMixedBatch(t *testing.T) {
@@ -269,8 +326,8 @@ https://discord.com/api/v9/channels/%s/messages?limit=50
 
 	stats, err = Import(ctx, st, Options{Path: dir})
 	require.NoError(t, err)
-	require.Equal(t, 0, stats.FilesScanned)
-	require.Equal(t, 1, stats.FilesUnchanged)
+	require.Equal(t, 1, stats.FilesScanned)
+	require.Equal(t, 0, stats.FilesUnchanged)
 	requireMessageCount(t, ctx, st, "message_events", 0)
 }
 
@@ -322,6 +379,62 @@ func TestImportDoesNotDuplicateEventsWhenSwitchingFullCacheModes(t *testing.T) {
 		require.Equal(t, 1, stats.FilesUnchanged)
 		requireMessageCount(t, ctx, st, "message_events", 1)
 	})
+}
+
+func TestImportMigratesV1IndexWithoutDuplicatingExistingMessageEvents(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "Cache", "Cache_Data")
+	require.NoError(t, os.MkdirAll(cachePath, 0o755))
+
+	existingChannelID := "111111111111111121"
+	recoveredChannelID := "111111111111111122"
+	guildID := "999999999999999996"
+	existingMessageID := "333333333333333346"
+	recoveredMessageID := "333333333333333347"
+	existingPath := filepath.Join(cachePath, "entry_000")
+	require.NoError(t, os.WriteFile(existingPath, bytesf(`https://discord.com/channels/%s/%s
+{"id":"%s","guild_id":"%s","type":0,"name":"existing-channel"}
+{"id":"%s","channel_id":"%s","content":"existing migration message","timestamp":"2026-04-23T18:20:43Z","author":{"id":"222222222222222232","username":"alice"}}
+`, guildID, existingChannelID, existingChannelID, guildID, existingMessageID, existingChannelID), 0o600))
+
+	st, err := store.Open(ctx, filepath.Join(dir, "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = st.Close() }()
+
+	stats, err := Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Messages)
+	requireMessageCount(t, ctx, st, "message_events", 1)
+
+	unresolvedPath := filepath.Join(cachePath, "entry_001")
+	require.NoError(t, os.WriteFile(unresolvedPath, bytesf(`https://discord.com/api/v9/channels/%s/messages?limit=50
+{"id":"%s","channel_id":"%s","content":"recovered migration message","timestamp":"2026-04-23T18:20:44Z","author":{"id":"222222222222222232","username":"alice"}}
+`, recoveredChannelID, recoveredMessageID, recoveredChannelID), 0o600))
+	existingInfo, err := os.Stat(existingPath)
+	require.NoError(t, err)
+	unresolvedInfo, err := os.Stat(unresolvedPath)
+	require.NoError(t, err)
+	legacyIndex, err := json.Marshal(map[string]fileFingerprint{
+		"Cache/Cache_Data/entry_000": {Size: existingInfo.Size(), ModUnixNS: existingInfo.ModTime().UnixNano()},
+		"Cache/Cache_Data/entry_001": {Size: unresolvedInfo.Size(), ModUnixNS: unresolvedInfo.ModTime().UnixNano()},
+	})
+	require.NoError(t, err)
+	require.NoError(t, st.SetSyncState(ctx, "wiretap:file_index:v1", string(legacyIndex)))
+	require.NoError(t, st.SetSyncState(ctx, wiretapFileIndexScope, ""))
+
+	require.NoError(t, os.WriteFile(filepath.Join(cachePath, "entry_002"), bytesf(`https://discord.com/channels/%s/%s
+{"id":"%s","guild_id":"%s","type":0,"name":"recovered-channel"}
+`, guildID, recoveredChannelID, recoveredChannelID, guildID), 0o600))
+	stats, err = Import(ctx, st, Options{Path: dir})
+	require.NoError(t, err)
+	require.Equal(t, 3, stats.FilesScanned)
+
+	results, err := st.SearchMessages(ctx, store.SearchOptions{Query: "recovered migration", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	requireMessageCount(t, ctx, st, "message_events where message_id = '"+existingMessageID+"'", 1)
+	requireMessageCount(t, ctx, st, "message_events where message_id = '"+recoveredMessageID+"'", 1)
 }
 
 func TestImportFastCachePreservesKnownChannelMetadataAcrossBatches(t *testing.T) {

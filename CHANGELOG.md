@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changes
+
+- Track unresolved Discord Desktop cache messages in a local, deduplicated reconciliation queue with aggregate progress receipts. The queue stores identifiers and timestamps only, never raw cache payloads or paths, and remains excluded from published snapshots.
+
 ## v0.13.3 - 2026-08-17
 
 ### Fixes

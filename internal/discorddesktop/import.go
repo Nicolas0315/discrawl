@@ -46,27 +46,28 @@ type Options struct {
 }
 
 type Stats struct {
-	Path                  string    `json:"path"`
-	FilesVisited          int       `json:"files_visited"`
-	FilesScanned          int       `json:"files_scanned"`
-	FilesSkipped          int       `json:"files_skipped"`
-	FilesUnchanged        int       `json:"files_unchanged"`
-	CacheFilesFastSkipped int       `json:"cache_files_fast_skipped"`
-	BytesScanned          int64     `json:"bytes_scanned"`
-	JSONObjects           int       `json:"json_objects"`
-	Guilds                int       `json:"guilds"`
-	Channels              int       `json:"channels"`
-	Messages              int       `json:"messages"`
-	DMMessages            int       `json:"dm_messages"`
-	DMChannels            int       `json:"dm_channels"`
-	GuildMessages         int       `json:"guild_messages"`
-	SkippedMessages       int       `json:"skipped_messages"`
-	SkippedChannels       int       `json:"skipped_channels"`
-	Checkpoints           int       `json:"checkpoints"`
-	DryRun                bool      `json:"dry_run,omitempty"`
-	FullCache             bool      `json:"full_cache,omitempty"`
-	StartedAt             time.Time `json:"started_at"`
-	FinishedAt            time.Time `json:"finished_at"`
+	Path                  string                `json:"path"`
+	FilesVisited          int                   `json:"files_visited"`
+	FilesScanned          int                   `json:"files_scanned"`
+	FilesSkipped          int                   `json:"files_skipped"`
+	FilesUnchanged        int                   `json:"files_unchanged"`
+	CacheFilesFastSkipped int                   `json:"cache_files_fast_skipped"`
+	BytesScanned          int64                 `json:"bytes_scanned"`
+	JSONObjects           int                   `json:"json_objects"`
+	Guilds                int                   `json:"guilds"`
+	Channels              int                   `json:"channels"`
+	Messages              int                   `json:"messages"`
+	DMMessages            int                   `json:"dm_messages"`
+	DMChannels            int                   `json:"dm_channels"`
+	GuildMessages         int                   `json:"guild_messages"`
+	SkippedMessages       int                   `json:"skipped_messages"`
+	SkippedChannels       int                   `json:"skipped_channels"`
+	Checkpoints           int                   `json:"checkpoints"`
+	Reconciliation        ReconciliationReceipt `json:"reconciliation"`
+	DryRun                bool                  `json:"dry_run,omitempty"`
+	FullCache             bool                  `json:"full_cache,omitempty"`
+	StartedAt             time.Time             `json:"started_at"`
+	FinishedAt            time.Time             `json:"finished_at"`
 }
 
 type snapshot struct {
@@ -84,9 +85,10 @@ type fileFingerprint struct {
 }
 
 type scanState struct {
-	previous map[string]fileFingerprint
-	current  map[string]fileFingerprint
-	channels map[string]store.ChannelRecord
+	previous         map[string]fileFingerprint
+	current          map[string]fileFingerprint
+	channels         map[string]store.ChannelRecord
+	migratingV1Index bool
 }
 
 type fileSource int
@@ -118,7 +120,10 @@ type scanTotals struct {
 
 type unresolvedMessages map[string]string
 
-const wiretapFileIndexScope = "wiretap:file_index:v1"
+const (
+	wiretapFileIndexScope  = "wiretap:file_index:v2"
+	legacyFileIndexScopeV1 = "wiretap:file_index:v1"
+)
 
 const (
 	fileStatusImported = "imported"
@@ -152,7 +157,7 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 		return Stats{}, err
 	}
 	if opts.FullCache {
-		stats, snap, err := scanFullCache(ctx, opts, state)
+		stats, snap, unresolved, err := scanFullCache(ctx, opts, state)
 		if err != nil {
 			return stats, err
 		}
@@ -160,13 +165,28 @@ func Import(ctx context.Context, st *store.Store, opts Options) (Stats, error) {
 		if opts.DryRun {
 			return stats, nil
 		}
-		if err := writeSnapshot(ctx, st, snap, len(state.previous) == 0); err != nil {
+		if state.migratingV1Index {
+			snap, err = snapshotWithoutExistingMessageEvents(ctx, st, snap)
+			if err != nil {
+				return stats, err
+			}
+		}
+		if err := writeSnapshot(ctx, st, snap, len(state.previous) == 0 && !state.migratingV1Index); err != nil {
 			return stats, err
 		}
 		if err := saveFileIndex(ctx, st, opts, state.current); err != nil {
 			return stats, err
 		}
 		stats.Checkpoints = 1
+		imported := make(map[string]struct{}, len(snap.messages))
+		for messageID := range snap.messages {
+			imported[messageID] = struct{}{}
+		}
+		receipt, err := reconcileQueue(ctx, st, unresolved, imported, stats.FinishedAt)
+		if err != nil {
+			return stats, err
+		}
+		stats.Reconciliation = receipt
 		if err := saveCoverageStats(ctx, st, stats); err != nil {
 			return stats, err
 		}
@@ -213,6 +233,15 @@ func loadScanState(ctx context.Context, st *store.Store, opts Options) (scanStat
 	if strings.TrimSpace(raw) != "" {
 		if err := json.Unmarshal([]byte(raw), &state.previous); err != nil {
 			state.previous = map[string]fileFingerprint{}
+		}
+	} else {
+		legacyRaw, err := st.GetSyncState(ctx, legacyFileIndexScopeV1)
+		if err != nil {
+			return state, err
+		}
+		legacyIndex := map[string]fileFingerprint{}
+		if json.Unmarshal([]byte(legacyRaw), &legacyIndex) == nil && len(legacyIndex) > 0 {
+			state.migratingV1Index = true
 		}
 	}
 	channels, err := st.Channels(ctx, "")
@@ -285,7 +314,7 @@ func scanAndImport(ctx context.Context, st *store.Store, opts Options, state sca
 		stats.FinishedAt = now().UTC()
 		return stats, err
 	}
-	fullScan := len(state.previous) == 0
+	fullScan := len(state.previous) == 0 && !state.migratingV1Index
 	if fullScan && !opts.DryRun {
 		if err := st.DeleteGuildData(ctx, "@unknown"); err != nil {
 			stats.FinishedAt = now().UTC()
@@ -310,6 +339,12 @@ func scanAndImport(ctx context.Context, st *store.Store, opts Options, state sca
 		return stats, err
 	}
 	if !opts.DryRun {
+		receipt, err := reconcileQueue(ctx, st, run.pendingUnresolved, run.totals.messages, now())
+		if err != nil {
+			stats.FinishedAt = now().UTC()
+			return stats, err
+		}
+		stats.Reconciliation = receipt
 		if len(contextFiles) == 0 && len(cacheFiles) == 0 {
 			if err := st.SetSyncState(ctx, "wiretap:last_import", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 				stats.FinishedAt = now().UTC()
@@ -330,7 +365,7 @@ func scanAndImport(ctx context.Context, st *store.Store, opts Options, state sca
 	return stats, nil
 }
 
-func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, snapshot, error) {
+func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, snapshot, unresolvedMessages, error) {
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -348,7 +383,7 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 	rootFS, err := os.OpenRoot(root)
 	if err != nil {
 		stats.FinishedAt = now().UTC()
-		return stats, snap, ignoreCacheFileError(err)
+		return stats, snap, nil, ignoreCacheFileError(err)
 	}
 	defer func() { _ = rootFS.Close() }()
 	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -418,12 +453,12 @@ func scanFullCache(ctx context.Context, opts Options, state scanState) (Stats, s
 		}
 		return nil
 	}); err != nil {
-		return stats, snap, err
+		return stats, snap, nil, err
 	}
 	totals := newScanTotals()
-	finalizeSnapshot(snap, state.channels, totals, &stats, true)
+	unresolved := finalizeSnapshot(snap, state.channels, totals, &stats, true)
 	stats.FinishedAt = now().UTC()
-	return stats, snap, nil
+	return stats, snap, unresolved, nil
 }
 
 func discoverCandidates(ctx context.Context, root string, rootFS *os.Root, opts Options, state scanState, stats *Stats) ([]fileCandidate, []fileCandidate, error) {
@@ -662,6 +697,13 @@ func commitSnapshot(ctx context.Context, st *store.Store, opts Options, state sc
 		return nil
 	}
 	if snapshotHasChanges(snap) {
+		if state.migratingV1Index {
+			var err error
+			snap, err = snapshotWithoutExistingMessageEvents(ctx, st, snap)
+			if err != nil {
+				return err
+			}
+		}
 		if err := writeSnapshot(ctx, st, snap, false); err != nil {
 			return err
 		}
@@ -686,7 +728,7 @@ func checkpointScannedCandidates(ctx context.Context, st *store.Store, opts Opti
 		return err
 	}
 	for _, candidate := range candidates {
-		state.current[candidate.relKey] = importedFingerprint(candidate.fingerprint)
+		state.current[candidate.relKey] = skippedFingerprint(candidate.fingerprint)
 	}
 	if err := saveFileIndex(ctx, st, opts, state.current); err != nil {
 		return err
@@ -708,6 +750,24 @@ func snapshotWithoutMessageEvents(snap snapshot) snapshot {
 		out.messages[id] = message
 	}
 	return out
+}
+
+func snapshotWithoutExistingMessageEvents(ctx context.Context, st *store.Store, snap snapshot) (snapshot, error) {
+	ids := make([]string, 0, len(snap.messages))
+	for id := range snap.messages {
+		ids = append(ids, id)
+	}
+	existing, err := st.ExistingMessageIDs(ctx, ids)
+	if err != nil {
+		return snapshot{}, err
+	}
+	for id, message := range snap.messages {
+		if _, ok := existing[id]; ok {
+			message.Options.AppendEvent = false
+			snap.messages[id] = message
+		}
+	}
+	return snap, nil
 }
 
 func newSnapshot() snapshot {

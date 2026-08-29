@@ -973,6 +973,32 @@ func TestDrainEmbeddingJobsDeletesStaleVectorsForEmptyContent(t *testing.T) {
 	require.Equal(t, [][]string{{"done", "ollama", "nomic-embed-text"}}, rows)
 }
 
+func TestSetSyncStatesRollsBackBothValuesWhenSecondWriteFails(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "discrawl.db"))
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+
+	_, err = s.Exec(ctx, `
+		create trigger fail_second_sync_state
+		before insert on sync_state
+		when new.scope = 'wiretap:receipt'
+		begin
+			select raise(abort, 'forced receipt failure');
+		end
+	`)
+	require.NoError(t, err)
+
+	err = s.SetSyncStates(ctx, map[string]string{
+		"wiretap:queue":   `{"items":1}`,
+		"wiretap:receipt": `{"remaining":1}`,
+	})
+	require.ErrorContains(t, err, "forced receipt failure")
+	queue, err := s.GetSyncState(ctx, "wiretap:queue")
+	require.NoError(t, err)
+	require.Empty(t, queue)
+}
+
 func TestPendingEmbeddingJobsSkipsFreshLocks(t *testing.T) {
 	t.Parallel()
 
